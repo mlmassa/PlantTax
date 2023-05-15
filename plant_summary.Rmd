@@ -1,0 +1,957 @@
+---
+date: |
+  `r format(Sys.time(), '%d %b %Y')`
+title: | 
+  Herbarium Collection Project Supporting Documentation
+author: Megan Massa
+output: 
+  bookdown::word_document2:
+    reference_docx: "data/raw/template_simple.docx"
+    number_sections: false
+    linenumbers: no
+bibliography: ./planttax.bib
+csl: ./apa.csl
+link-citations: yes
+editor_options: 
+  markdown: 
+    wrap: sentence
+---
+
+```{r setup, include = F}
+# Don't print any code
+knitr::opts_chunk$set(echo = F, warning = F, message = F)
+
+# Load necessary packages
+library(tidyverse) # Data manipulation
+library(glue) # Nicer paste-together of strings
+library(sf) # Spatial data
+
+# Load data
+plants <-
+  read_csv("data/processed/plant_collections.csv") |> 
+  # In case this is re-run in the future when I have more collections
+  filter(as.numeric(str_sub(id, -3, -1)) <= 20) |> 
+  # Convert to spatial object
+  st_as_sf(
+    coords = c("long", "lat"),
+    remove = F,
+    crs = 4326)
+
+# Species iteration counter
+x <- 0
+```
+
+```{r getdata, include = F, eval = F}
+# Load required mapping packages
+library(tigris) # Fetch county/state/road/water shapefiles
+options(tigris_use_cache = TRUE) # Don't redownload shapefiles
+library(ggpubr) # Combine figure parts
+library(terra) # Handle raster files
+library(elevatr) # Fetch elevation data
+library(tidyterra) # Make rasters play nice with ggplot
+
+# Set ggplot theme
+theme_set(
+  theme_bw(base_size = 11.5) +
+  theme(text = element_text(family = "Calibri")))
+
+# Get window for large-area map
+bbox_large <-
+  st_bbox(plants)
+
+# Actually, I played with it and changed my mind
+bbox_large[[1]] <- -80.5
+bbox_large[[2]] <- 34.5
+bbox_large[[3]] <- -76.1
+bbox_large[[4]] <- 40.5
+
+# Make bbox a plottable object (for inset map)
+bbox_large_window <-
+  st_as_sfc(bbox_large)
+
+# Get window for small-area map
+bbox_small <-
+  plants |> 
+  dplyr::filter(!state == "North Carolina") |> 
+  st_buffer(dist = 2000) |> 
+  st_bbox()
+
+# Slightly expand
+bbox_small <-
+  bbox_small + c(-0.01, -0.051, 0.01, 0.03)
+
+# Make bbox a plottable object
+bbox_small_window <-
+  st_as_sfc(bbox_small)
+
+# Get states for map (More than I ended up using, but could replot more zoomed out if needed)
+states <- 
+  states() |> 
+  dplyr::filter(
+    NAME %in% c(
+      "Virginia", "West Virginia", "Maryland", "District of Columbia", 
+      "North Carolina", "Pennsylvania", "Delaware", "Ohio", 
+      "South Carolina", "New Jersey")) |> 
+  st_transform(crs = st_crs(plants))
+
+# Get one point per site (for large map)
+sites <-
+  plants |> 
+  group_by(site) |> 
+  summarise(st_union(geometry)) |> 
+  st_centroid() 
+
+# Get counties
+counties <-
+  counties(state = states$STUSPS) |> 
+  st_transform(crs = st_crs(plants))
+
+# Get lakes and large rivers
+water <-
+  bind_rows(
+    area_water(
+      state = "MD", 
+      county = "Garrett"),
+    area_water(
+      state = "MD", 
+      county = "Allegany"),
+    area_water(
+      state = "PA", 
+      county = "Somerset"),
+    area_water(
+      state = "PA", 
+      county = "Bedford"),
+    area_water(
+      state = "WV", 
+      county = "Mineral")) |>
+  st_transform(crs = st_crs(plants))
+
+# Get rivers and streams
+water_line <-
+  bind_rows(
+    linear_water(
+      state = "MD", 
+      county = "Garrett"), 
+    linear_water(
+      state = "MD", 
+      county = "Allegany"),
+    linear_water(
+      state = "PA", 
+      county = "Somerset"),
+    linear_water(
+      state = "PA", 
+      county = "Bedford"),
+    linear_water(
+      state = "WV", 
+      county = "Mineral")) |>
+  st_transform(crs = st_crs(plants))
+
+# Get main roads
+roads <-
+  bind_rows(
+    primary_secondary_roads(state = "MD"),
+    primary_secondary_roads(state = "PA"),
+    primary_secondary_roads(state = "WV")) |> 
+  st_transform(crs = st_crs(plants)) |> 
+  st_crop(bbox_small + c(-0.1, -0.1, 0.1, 0.1))
+
+# Set hillshade palette
+grays <- 
+  colorRampPalette(c("gray30", "gray50", "#E8EAED", "white"))
+
+# Get vector of hillshade colors
+pal_gray <- 
+  grays(1000)
+
+# COARSE ELEVATION for large map ----
+# Download coarse elevation
+elev_large <-
+  get_elev_raster(
+    as_Spatial(bbox_large_window), 
+    neg_to_na = T, # Large negative numbers: eliminate
+    z = 8) |> 
+  # Downloads as raster; convert to terra
+  rast()
+
+# Convert elevation 0 (water, in this dataset) to NA. Imperfect, but we're not mapping coastline
+elev_large <-
+  # if/else for terra spatrasters
+  ifel(elev_ <= 0, NA, elev_large)
+
+# Create hillshade effect
+hill_large <- 
+  shade(
+    terrain(elev_large, "slope", unit = "radians"), 
+    terrain(elev_large, "aspect", unit = "radians"), 
+    30, 270)
+
+# Scale raster to # of colors in gray palette
+index_large <- 
+  hill_large |> 
+  mutate(index_col = scales::rescale(hillshade, to = c(1, length(pal_gray)))) |>
+  mutate(index_col = round(index_col)) |> 
+  pull(index_col)
+
+# Set color palette of hillshade
+vector_cols_large <- pal_gray[index_large]
+
+# FINE ----
+# Download fine elevation
+elev_small <-
+  get_elev_raster(
+    as_Spatial(bbox_small_window), 
+    neg_to_na = T, # Large negative numbers: eliminate
+    z = 11) |> 
+  rast()
+
+# Create hillshade effect
+hill_small <- 
+  shade(
+    terrain(elev_small, "slope", unit = "radians"), 
+    terrain(elev_small, "aspect", unit = "radians"), 
+    30, 270)
+
+index_small <- 
+  hill_small |> 
+  mutate(index_col = scales::rescale(hillshade, to = c(1, length(pal_gray)))) |>
+  mutate(index_col = round(index_col)) |> 
+  pull(index_col)
+
+# Get cols
+vector_cols_small <- pal_gray[index_small]
+```
+
+```{r makemap, include = F, eval = F}
+
+# Symbol colors: color-blind friendly palette
+# Chose to eliminate blues to prevent confusion with water bodies
+okabe <-
+  palette.colors(palette = "Okabe-Ito")[c(1, 2, 4, 5, 7, 8)] |> 
+  unname() |> 
+  rev()
+
+water_col <- "#5295c9" 
+
+# Large map ----
+map_large <-
+  ggplot() +
+  ## Hillshade ----
+  geom_spatraster(
+    data = hill_large, 
+    fill = vector_cols_large, 
+    maxcell = Inf,
+    alpha = 1) +
+  ## Counties ----
+  geom_sf(
+    data = counties, 
+    fill = NA,
+    color = alpha("gray30", 0.4),
+    linewidth = 0.1) +
+  ## US state borders ----
+  geom_sf(
+    data = states, 
+    fill = NA,
+    linewidth = 0.25,
+    color = "black") +
+  ## Sites ----
+  geom_sf(
+    data = sites,
+    aes(shape = site, fill = site),
+    size = 2.25,
+    stroke = 0.3) +
+  scale_shape_manual(values = c(21, 21:25)) +
+  scale_fill_manual(values = okabe) +
+  ## Zoom box ----
+  geom_sf(
+    data = bbox_small_window,
+    fill = NA,
+    linewidth = 0.25,
+    color = "red") +
+  ## Extras ----
+  coord_sf(
+    xlim = c(bbox_large[["xmin"]], bbox_large[["xmax"]]),
+    ylim = c(bbox_large[["ymin"]], bbox_large[["ymax"]]),
+    expand = F) +
+  labs(
+    shape = "Site",
+    fill = "Site") +
+  theme(
+    panel.background = element_rect(fill = water_col),
+    panel.grid = element_blank()) 
+
+# Small map ----
+map_small <-
+  ggplot() +
+  ## Hillshade ----
+  geom_spatraster(
+    data = hill_small, 
+    fill = vector_cols_small, 
+    maxcell = Inf,
+    alpha = 1) +
+  ## Water area ----
+  geom_sf(
+    data = water,
+    fill = water_col,
+    color = water_col) +
+  ## Water linear ----
+  geom_sf(
+    data = water_line,
+    color = water_col,
+    linewidth = 0.1,
+    alpha = 0.9) +
+  ## Roads ----
+  geom_sf(
+    data = roads,
+    # Scale line width width by road type
+    aes(linewidth = MTFCC),
+    color = "white") +
+  scale_linewidth_manual(values = c(0.5, 0.25)) +
+  ## Counties ----
+  geom_sf(
+    data = counties, 
+    fill = NA,
+    color = alpha("gray30", 0.4),
+    linewidth = 0.3) +
+  ## US state borders ----
+  geom_sf(
+    data = states, 
+    fill = NA,
+    linewidth = 0.25,
+    color = "black") +
+  ## Sites ----
+  geom_sf(
+    data = plants,
+    aes(shape = site, fill = site),
+    size = 2,
+    stroke = 0.3) +
+  scale_shape_manual(values = c(21, 21:25)) +
+  scale_fill_manual(values = okabe) +
+  ## Extras ----
+  coord_sf(
+    xlim = c(bbox_small[["xmin"]], bbox_small[["xmax"]]),
+    ylim = c(bbox_small[["ymin"]], bbox_small[["ymax"]]),
+    expand = F) +
+  labs(
+    shape = "Site",
+    fill = "Site") +
+  guides(linewidth = "none") +
+  theme(panel.grid = element_blank()) 
+
+ggarrange(
+  map_large + 
+    theme(legend.position = "none"), 
+  map_small + 
+    theme(legend.position = "bottom") + 
+    guides(
+      fill = guide_legend(nrow = 3), 
+      shape = guide_legend(nrow = 3)), 
+  common.legend = F, 
+  widths = c(1, 1.5), 
+  align = "v") +
+bgcolor("white") +
+border("white")
+
+ggsave(
+  "output/plots/sample_map.png",
+  width = 7.5,
+  height = 4,
+  units = "in",
+  dpi = "retina")
+
+```
+
+# Introduction
+
+Herbaria are valuable [@heberling2019].
+
+"Herbaria are critical resources for documenting biological and environmental change in the unfolding era of human domination of earth systems"
+
+"herbarium use has diversified from a few dominant research topics a century ago (e.g., taxonomic notes, botanical history, local observations), with many topics only recently emerging (e.g., biodiversity informatics, global change biology, DNA analyses). Specimens are now appreciated as temporally and spatially extensive sources of genotypic, phenotypic, and biogeographic data. Specimens are increasingly used in ways that influence our ability to steward future biodiversity."
+
+Understanding the biogeography, ecology, and cultural significance of plant specimens [...]
+
+## Objectives
+
+
+
+# Methods
+
+## Collections
+Pressed.
+I collected specimens from public, non-protected areas and from private lands where permission was obtained from the landowner. For each specimen, I identified the species and recorded locality, habitat, coordinates, and three or more associated species. Vouchers were pressed and mounted following University of Florida [].
+
+Using the collected dataa, I created a spreadsheed of plant specimens. Digitizing this information allowed me to use code to generate herbarium labels, map specimen locations, and automate certain summary text. All coding was conducted in program R version `r glue("{version$major}.{version$minor}")` [@rcoreteam2023].
+Code associated with this project is available at GitHub repo.
+
+I created illustrations of select specimens depicting key characteristics.
+
+# Specimens
+
+I collected 20 specimens for the Frostburg State University herbarium in spring 2023 representing 19 species in `r n_distinct(plants$family)` families.
+Specimens came from three counties in two states (Allegany, Maryland; Garrett, Maryland; and Wake, North Carolina; Figure \@ref(fig:map)).
+At least one species (*Asplenium platyneuron*) was new for the Frostburg collection.
+This document provides supporting information on the species collected.
+
+```{r map, fig.width = 7.5, fig.height = 4, dpi = 300, fig.cap = "Collection sites for herbarium specimens during spring 2023. Left: all sites. Right: Sites in western Maryland. County lines are drawn in dark gray. Major roads are depicted in white."}
+knitr::include_graphics("output/plots/sample_map.png")
+```
+
+```{r include = F}
+x <- x + 1
+```
+
+## **1.** `r plants$id[x]`: *`r plants$species[x]`* `r plants$authority[x]`
+
+Family `r plants$family[x]`, order `r plants$order[x]` 
+
+`r str_to_sentence(plants$common_name[x])` 
+
+Collected `r format(plants$date[x], "%B %e")` from `r plants$site[x]` in `r plants$county[x]` County, `r plants$state[x]` (`r round(plants$lat[x], 5)`, `r round(plants$long[x], 5)`).
+`r if_else(!is.na(plants$inaturalist[x]), glue("Photos are available at {plants$inaturalist[x]}."), "")` 
+
+```{r denden}
+knitr::include_graphics("output/denden.png")
+```
+
+### Morphological description
+*Dendrolycopodium dendroideum* is an erect, branching evergreen clubmoss with a sessile strobilus, which can be separated from *D. obscurum* by spreading microphylls on the vertical stem [@fov].
+
+### Range and habitat
+In Virginia, this species is found in high-elevation mountain habitats and northern hardwood forests, particularly in association with red spruce [@fov].
+Elsewhere, the species is common to aspen-birch forests, bog edges, and moist forest soils [@nauertz1999].
+
+### Ecology
+As a plant with a creeping habit, *D. dendroideum* likely provides soil stability.
+
+### Economic and cultural significance
+The species has limited economic uses.
+Lycopodium powder was an important component of early flash photography, and although there are still uses today, as a less-common species *D. dendroideum* is not a likely commercial source.
+Like many lycopodes, this species regenerates slowly, with aerial stems not reaching maturity until 4 to 6 years of age [@nauertz1999], making it vulnerable to overharvesting.
+*D. dendroideum* is also known to produce several alkaloids, including lycopodine, obscurine, L13, L16, and L17 [@manske1944].
+
+```{r include = F}
+x <- x + 1
+```
+
+## **2.** `r plants$id[x]`: *`r plants$species[x]`* `r plants$authority[x]`
+
+Family `r plants$family[x]`, order `r plants$order[x]` 
+
+`r str_to_sentence(plants$common_name[x])` 
+
+Collected `r format(plants$date[x], "%B %e")` from `r plants$site[x]` in `r plants$county[x]` County, `r plants$state[x]` (`r round(plants$lat[x], 5)`, `r round(plants$long[x], 5)`).
+`r if_else(!is.na(plants$inaturalist[x]), glue("Photos are available at {plants$inaturalist[x]}."), "")` 
+
+### Morphological description
+*Polystichum acrostichoides* is an evergreen fern with pinnate, dimorphic leaves growing from from 25-80 cm in length [@fov].
+It has a clumping habit.
+The petioles have light brown scales.
+Pinnae have well-developed acroscopic auricles and serrulate-spiny margins.
+Fertile blades have contrasted distal pinnae, upon which are confluent sori covering the abaxial surface which are covered by entire, deciduous indusia.
+
+### Range and habitat
+Christmas fern ranges throughout the eastern US to southeastern Canada.
+It is common throughout its range in mesic to dry forests, where it is found on the forest floor and shady, rocky slopes [@fna].
+
+### Ecology
+After frost, the fronds are no longer erect and can hold leaf litter in place on the forest floor, controlling erosion and allowing soil to build.
+
+### Economic and cultural significance
+This species is also a popular ornamental garden planting.
+
+```{r include = F}
+x <- x + 1
+```
+
+## **3.** `r plants$id[x]`: *`r plants$species[x]`* `r plants$authority[x]`
+
+Family `r plants$family[x]`, order `r plants$order[x]` 
+
+`r str_to_sentence(plants$common_name[x])` 
+
+Collected `r format(plants$date[x], "%B %e")` from `r plants$site[x]` in `r plants$county[x]` County, `r plants$state[x]` (`r round(plants$lat[x], 5)`, `r round(plants$long[x], 5)`).
+`r if_else(!is.na(plants$inaturalist[x]), glue("Photos are available at {plants$inaturalist[x]}."), "")` 
+
+### Morphological description
+*Huperzia lucidula* is a clubmoss with indeterminate, erect shoots that senesce and turn brown in trailing portions [@fov].
+Unlike other clubmoss genera it has forked but not branched stems that produce sporangia in the leaf axis rather than in strobili.
+Not evident in this specimen but unique to the genus are gemmae, clonal propagules produced at the top of stems that allow for vegetative propagation.
+
+### Range and habitat
+This species is found in shaded coniferous and mixed hardwood forests [@fna] and is mainly on forest soils rather than rock outcrops [@fov].
+It ranges throughout eastern North America.
+
+### Ecology
+As a plant with a creeping habit that often forms large colonies, *H. lucidula* likely provides soil stability.
+
+### Economic and cultural significance
+Stems have traditionally been used as padding in cradleboards in several Native American cultures [@nauertz1999].
+
+```{r include = F}
+x <- x + 1
+```
+
+## **4.** `r plants$id[x]`: *`r plants$species[x]`* `r plants$authority[x]`
+
+Family `r plants$family[x]`, order `r plants$order[x]` 
+
+`r str_to_sentence(plants$common_name[x])` 
+
+Collected `r format(plants$date[x], "%B %e")` from `r plants$site[x]` in `r plants$county[x]` County, `r plants$state[x]` (`r round(plants$lat[x], 5)`, `r round(plants$long[x], 5)`).
+`r if_else(!is.na(plants$inaturalist[x]), glue("Photos are available at {plants$inaturalist[x]}."), "")` 
+
+### Morphological description
+*Asplenium platyneuron* is a common fern. 
+It has short, non-proliferous roots and can form clumps [@fna].
+Fertile leaves are longer than sterile leaves and stand taller but otherwise do not differ.
+The common name comes from its lustrous reddish-brown petiole with blank indument.
+Blades are pinnate, with the bases of pinnae auricled and overlapping the rachis.
+Pinnae are longer than wide, and margins are crenate to serrulate.
+Sporangia are linear and elongate.
+This specimen possesses sori, some with indusia which are translucent and whitish [@fov].
+
+### Range and habitat
+*A. platyneuron* is common throughout a variety of habitat types including mesic and dry forests, rocky woodlands, and outcrops, where it grows on soil, rock, and wood.
+This specimen was growing on a mossy, pulverized shale roadside.
+It is found throughout the eastern United States, with few populations west of Texas or north of the Canadian border [@fna].
+Most notably, the species also occurs in southern Africa, a trait unique among North American ferns.
+
+### Ecology
+Arbuscular mycorrhizal fungus (Glomeromycota) associate mutualistically with the roots of this species [@west2009], providing protections from pathogens and herbivores and mobilizing nutrients.
+
+### Economic and cultural significance
+Historically, members of *Asplenium* were used to "remove disorders of the spleen" [@fernie1891].
+
+```{r include = F}
+x <- x + 1
+```
+
+## 5. `r plants$id[x]`: *`r plants$species[x]`* `r plants$authority[x]`
+
+Family `r plants$family[x]`, order `r plants$order[x]` 
+
+`r str_to_sentence(plants$common_name[x])` 
+
+Collected `r format(plants$date[x], "%B %e")` from `r plants$site[x]` in `r plants$county[x]` County, `r plants$state[x]` (`r round(plants$lat[x], 5)`, `r round(plants$long[x], 5)`).
+`r if_else(!is.na(plants$inaturalist[x]), glue("Photos are available at {plants$inaturalist[x]}."), "")` 
+
+### Morphological description
+*Vinca minor* is a creeping or scrambling vine up to 100 cm in length that forms mats.
+The leaves are glossy and evergreen, lanceolate or elliptic, broadest near the middle, and rounded at the base, which distinguishes this species from the larger, ovate-leaved *V. major* [@fov]. The flowers are blue to blue-violet.
+
+### Range and habitat
+It is locally frequent in disturbed forests and clearings.
+
+### Ecology
+A non-native species, *V. minor* is assigned a low invasiveness rank, but under the right conditions it can cover large areas and threaten native forest ground flora.
+
+### Economic and cultural significance
+It is used in the horticulture industry and is a common sight at the site of old homesteads and cemeteries.
+
+```{r include = F}
+x <- x + 1
+```
+
+## 6. `r plants$id[x]`: *`r plants$species[x]`* `r plants$authority[x]`
+
+Family `r plants$family[x]`, order `r plants$order[x]`
+
+<br><br>I collected this `r plants$common_name[x]` on `r format(plants$date[x], "%B %e")` from `r plants$site[x]` in `r plants$county[x]` County, `r plants$state[x]`.
+`r if_else(!is.na(plants$inaturalist[x]), glue("Photos are available at {plants$inaturalist[x]}."), "")` 
+
+### Morphological description
+*Tussilago farfara* is a perennial flower with creeping rhizomes [@fov]. The leaves are alternate, with basal leaves developing after the florets into cordate, palmately-veined leaves with a white tomentum beneath and glabrous uppersides. The cauline leaves are reduced and scalelike. The capitulum is monocephalous and radiate, with ray florets narrow and yellow numbering 100-300 and disk flowers staminate and numbering 20-40.
+
+### Range and habitat
+A non-native species originally from Europe, coltsfoot can be found along roadsides, gravel or shale road or stream banks, and clearings.
+Introduced populations occur in northeastern North America from Newfoundland to Ontario and Minnesota down to Tennessee and North Carolina, as well as in Washington and British Columbia [@fna].
+
+### Ecology
+
+### Economic and cultural significance
+This species can be used as an expectorant and cough remedy.
+
+```{r include = F}
+x <- x + 1
+```
+
+## 7. `r plants$id[x]`: *`r plants$species[x]`* `r plants$authority[x]`
+
+Family `r plants$family[x]`, order `r plants$order[x]` 
+
+`r str_to_sentence(plants$common_name[x])` 
+
+Collected `r format(plants$date[x], "%B %e")` from `r plants$site[x]` in `r plants$county[x]` County, `r plants$state[x]` (`r round(plants$lat[x], 5)`, `r round(plants$long[x], 5)`).
+`r if_else(!is.na(plants$inaturalist[x]), glue("Photos are available at {plants$inaturalist[x]}."), "")` 
+
+### Morphological description
+This sedge is colonial with clumps forming along elongate rhizomes that are red ad fibrillose at the base [@fov]. Culms are smooth and longer than the leaves. The terminal spikes are reddish and staminate measuring 7-20 mm, with pistillate spikes sessile and lower from 3-12 mm in length. The pistillate scales are approximately the same length as the perigynia and are straw-colored to brown or purplish. The perigynia are subglobose above a contracted base, pubescent, and have beaks from 0.5-1.2 mm in length. This specimen was collected too early to observe many of these characteristics.
+
+### Range and habitat
+*Carex pensylvanica* can be found in varied habitats, from dry to mesic forests, woodlands, barrens, balds, and clearings. It is abundant in rocky or shale habitats and is not limited by soil chemistry.
+
+### Ecology
+
+### Economic and cultural significance
+
+```{r include = F}
+x <- x + 1
+```
+
+## 8. `r plants$id[x]`: *`r plants$species[x]`* `r plants$authority[x]`
+
+Family `r plants$family[x]`, order `r plants$order[x]` 
+
+`r str_to_sentence(plants$common_name[x])` 
+
+Collected `r format(plants$date[x], "%B %e")` from `r plants$site[x]` in `r plants$county[x]` County, `r plants$state[x]` (`r round(plants$lat[x], 5)`, `r round(plants$long[x], 5)`).
+`r if_else(!is.na(plants$inaturalist[x]), glue("Photos are available at {plants$inaturalist[x]}."), "")` 
+
+### Morphological description
+*Equisetum arvense* is a widespread horsetail. The vegetative stems are greed, branched in whorls with a hollow center, and grow from 2-60 (sometimes to 100) cm [@fna]. The stem has squarish sheaths with dark teeth. The fertile stems are brown, unbranched, larger-sheathed, fleshy, and ephemeral.
+
+### Range and habitat
+The species ranges throughout North America from Alaska and Nunavut down to New Mexico, northern Texas, Tennessee, and North Carolina. It can be found in a variety of habitats including roadsides, riverbanks, fields, marshes, pasture, and tundra.
+
+### Ecology
+Horsetail extract has antifungal properties that make it a natural alternative to copper-based agricultural fungicides [@trebbi2021].
+
+### Economic and cultural significance
+
+
+```{r include = F}
+x <- x + 1
+```
+
+## **9.** `r plants$id[x]`: *`r plants$species[x]`* `r plants$authority[x]`
+
+Family `r plants$family[x]`, order `r plants$order[x]` 
+
+`r str_to_sentence(plants$common_name[x])` 
+
+Collected `r format(plants$date[x], "%B %e")` from `r plants$site[x]` in `r plants$county[x]` County, `r plants$state[x]` (`r round(plants$lat[x], 5)`, `r round(plants$long[x], 5)`).
+`r if_else(!is.na(plants$inaturalist[x]), glue("Photos are available at {plants$inaturalist[x]}."), "")` 
+
+### Morphological description 
+*Viola hastata* is a perennial, caulescent violet with creeping, glabrous rhizomes [@fov].
+Stems are glabrous and occur singly or in pairs along the rhizome.
+The leaves are simple with shallow serrations, and occasionally show silver-gray variegation.
+Its name comes from the hastate to cordate leaf base with an acute tip.
+Flowers are lemon-yellow, often with brown lines, with lateral 2 petals bearded [@fna].
+The fruit is a glabrous, ovoid capsule containing bronze seeds.
+
+### Range and habitat 
+This species is restricted to the eastern United States from New York to Alabama excluding Florida, growing in the mountains and piedmont [@fna].
+In Virginia, it is associated with acidic cove forests, montane oak forests, and northern hardwood forests, typically with dry to mesic, acidic and infertile soils [@fov].
+
+### Ecology
+As with many members of *Viola*, the species possesses insect-pollinated chasmogamous flowers as well as underdeveloped self-pollinated cleistogamous flowers.
+In addition to pollinators, this species interacts with herbivores.
+In Great Smoky Mountains National Park, *Viola* species including *V. hastata* were more common in deer exclosures than at reference sites or control plots where it was typically absent, indicating the species is vulnerable to overbrowsing [@webster2005].
+
+### Economic and cultural significance
+
+```{r include = F}
+x <- x + 1
+```
+
+## 10. `r plants$id[x]`: *`r plants$species[x]`* `r plants$authority[x]`
+
+Family `r plants$family[x]`, order `r plants$order[x]` 
+
+`r str_to_sentence(plants$common_name[x])` 
+
+Collected `r format(plants$date[x], "%B %e")` from `r plants$site[x]` in `r plants$county[x]` County, `r plants$state[x]` (`r round(plants$lat[x], 5)`, `r round(plants$long[x], 5)`).
+`r if_else(!is.na(plants$inaturalist[x]), glue("Photos are available at {plants$inaturalist[x]}."), "")` 
+
+### Morphological description
+This lycopode exhibits tightly appressed leaves that are linear to narrowly lanceolate [@fna]. Successive branching leads to flat, fanlike branchlets. The strobili are on long stalks that are forked.
+
+### Range and habitat
+*D. digitatum* is endemic to eastern North America and can be found in coniferous and hardwood forests and second-growth, shrubby, or open fields from from eastern Minnesota to to New Brunswick south to northern Alabama.
+
+### Ecology
+It is the most abundant *Diphasiastrum* species on the continent.
+
+### Economic and cultural significance
+This species is used in Haudenosaunee medicine to treat a variety of ailments, although it does not appear to possess antibacterial properties [@frey2010].
+It is also used as decoration in wreaths [@fna].
+
+```{r include = F}
+x <- x + 1
+```
+
+## **11.** `r plants$id[x]`: *`r plants$species[x]`* `r plants$authority[x]`
+
+Family `r plants$family[x]`, order `r plants$order[x]` (Note: Flora of Virginia places this species in family Montiaceae)
+
+`r str_to_sentence(plants$common_name[x])` 
+
+Collected `r format(plants$date[x], "%B %e")` from `r plants$site[x]` in `r plants$county[x]` County, `r plants$state[x]` (`r round(plants$lat[x], 5)`, `r round(plants$long[x], 5)`).
+`r if_else(!is.na(plants$inaturalist[x]), glue("Photos are available at {plants$inaturalist[x]}."), "")` 
+
+### Morphological description 
+*Claytonia caroliniana* is a small herbaceous perennial growing in tufts from a globose corm (which I collected but misplaced; see iNaturalist photos).
+Its basal leaves are spatulate to elliptic and the cauline leaves are opposite and ovate to petiolate, separating it from *C. virginica* which has linear leaves [@fov].
+Flowers grow in raceme inflorescences in groups of 6-20 with the lowest pedicels tubtended by bracts.
+The white to pink petals have deep pink stripes, maturing to subglobose capsules that dehisce longitudinally.
+Pink anthers are evident in this specimen.
+
+### Range and habitat 
+This species is restricted to the Appalachian mountains, New England, and Great Lakes region, with additional records in Iowa, and Newfoundland [@fna].
+It is common to rare depending on region, and can be found in rich cove forests, northern hardwoods, and well-drained floodplains, often in calcareous soils [@fov].
+
+### Ecology
+As spring ephemerals, *Claytonia* species provide important resources to pollinators.
+Two major pollinators are *Andrena erigeniae*, which specializes on pollen and is closely associated with this genus, and a bee-fly *Bombylius major* [@parker2018].
+
+### Economic and cultural significance 
+Spring beauty corms have a long history of foraging in indigenous cultures, being eaten raw or prepared as one would a potato [@kuhnlein1991].
+They can be stored over winter.
+The related species *C. virginica* has ethnobotanical use as anticonvulsive and contraceptive by the Iroquois [@herrick1995].
+
+```{r include = F}
+x <- x + 1
+```
+
+## **12.** `r plants$id[x]`: *`r plants$species[x]`* `r plants$authority[x]`
+
+Family `r plants$family[x]`, order `r plants$order[x]`
+
+`r str_to_sentence(plants$common_name[x])` 
+
+Collected `r format(plants$date[x], "%B %e")` from `r plants$site[x]` in `r plants$county[x]` County, `r plants$state[x]` (`r round(plants$lat[x], 5)`, `r round(plants$long[x], 5)`).
+`r if_else(!is.na(plants$inaturalist[x]), glue("Photos are available at {plants$inaturalist[x]}."), "")` 
+
+### Morphological description 
+*Houstonia caerulea* is a small perennial herb growing 5-20 cm in height [@fov].
+It has filamentous rhizomes and slender, erect stems.
+The leaves are petiolate, oblanceolate to spatulate, and mostly confined to a basal rosette, with any cauline leaves are opposite and reduced.
+Flowers are four-parted, small (6-21 mm), solitary, and can be terminal or axillary.
+The corollas are salverform and range from violet to blue to white with a yellow center.
+
+### Range and habitat 
+This species is common throughout forests, woodlands, laws, and disturbed habitats, often rooting in moss.
+
+### Ecology
+*H. caerulea* is strongly preferred by pollinating bee-flies in genus *Bombylius*, which ignored other abundant flowers to forage on this species [@grimaldi1988].
+
+### Economic and cultural significance 
+Interestingly, this species was added to the video game Minecraft in 2011, where it is known as "azure bluet".
+
+```{r include = F}
+x <- x + 1
+```
+
+## **13.** `r plants$id[x]`: *`r plants$species[x]`* `r plants$authority[x]`
+
+Family `r plants$family[x]`, order `r plants$order[x]`
+
+`r str_to_sentence(plants$common_name[x])` 
+
+Collected `r format(plants$date[x], "%B %e")` from `r plants$site[x]` in `r plants$county[x]` County, `r plants$state[x]` (`r round(plants$lat[x], 5)`, `r round(plants$long[x], 5)`).
+`r if_else(!is.na(plants$inaturalist[x]), glue("Photos are available at {plants$inaturalist[x]}."), "")` 
+
+### Morphological description 
+*Hexastylis* is a perennial herb with stout rhizomes.
+The leaves are triangular to ovate-sagittate and often show variegation [@fov].
+Flowers lie on the ground and are hard and brown.
+The calyx tubes are urn-shaped.
+Complex, minute flower characteristics that are lost on pressing are important to the identification of *Hexastylis* species [@fov], but the leaf characteristics break *H. arifolia* out first in the key.
+
+### Range and habitat 
+The species is limited to the Southeast, where it ranges from Florida to southern Virginia and east to Louisiana and Tennessee [@fna].
+It is infrequent in mesic upland forests with oak and beech and occasional in wet flatwoods [@fov].
+
+### Ecology
+Members of this group are myrmecocohrous (exhibit ant-mediated seed dispersal).
+Both fruiting phenology and ant activity are driven by temperature, leading to mutualistic synchrony [@warren2011].
+In ecosytems invaded by Asian needle ant with a corresponding decline in native ant species, a failure of this mutualism leads to highly clumped plants without dispersal [@warren2015].
+
+### Economic and cultural significance T
+his species has been used by the Catawba tribe for stomach pain, heart trouble, and backaches, and by the Rappahanock for treatment of asthma and whooping cough [@fna].
+
+```{r include = F}
+x <- x + 1
+```
+
+## **14.** `r plants$id[x]`: *`r plants$species[x]`* `r plants$authority[x]`
+
+Family `r plants$family[x]`, order `r plants$order[x]`
+
+`r str_to_sentence(plants$common_name[x])` 
+
+Collected `r format(plants$date[x], "%B %e")` from `r plants$site[x]` in `r plants$county[x]` County, `r plants$state[x]` (`r round(plants$lat[x], 5)`, `r round(plants$long[x], 5)`).
+`r if_else(!is.na(plants$inaturalist[x]), glue("Photos are available at {plants$inaturalist[x]}."), "")` 
+
+### Morphological description 
+*Chimaphila maculata* is a perennial subshrub growing up to 30 cm in height.
+It has lanceolate, remotely-toothed evergreen leaves with a pale green midvein and lateral venation, unique to this species.
+It produces 1-5 umbellate white to pinkish flowers that mature into capsules on erect pedicels [@fov].
+
+### Range and habitat 
+This species occurs in a variety of habitats, from coniferous, mixed, and deciduous forests to xeric sand communities throughout eastern North America from Quebec in the northeast to Ontario to Mississippi and Florida [@fna].
+It also occurs in Arizona, Mexico, and Central America.
+It is introduced in France.
+
+### Ecology
+After hemlock woolly adelgid infestation, this species doubled in frequency in the understory of one forest in southern new England [@small2005].
+
+### Economic and cultural significance 
+The ethnobotanical and medical uses of related species *C. umbellata* are better-known, as it produces chimaphilin and other compounds with antifungal and antioxidant qualities [@galvan2008].
+
+```{r include = F}
+x <- x + 1
+```
+
+## 15. `r plants$id[x]`: *`r plants$species[x]`* `r plants$authority[x]`
+
+Family `r plants$family[x]`, order `r plants$order[x]`
+
+`r str_to_sentence(plants$common_name[x])` 
+
+Collected `r format(plants$date[x], "%B %e")` from `r plants$site[x]` in `r plants$county[x]` County, `r plants$state[x]` (`r round(plants$lat[x], 5)`, `r round(plants$long[x], 5)`).
+`r if_else(!is.na(plants$inaturalist[x]), glue("Photos are available at {plants$inaturalist[x]}."), "")` 
+
+### Morphological description
+The American beech is a large tree growing up to 35 m in height with smooth, gray bark [@fov]. Its slender twigs grow in a zigzag pattern and produce pointed buds with white trichomes. The leaves are elliptic to ovate with a cuneate base. The leaf margins are denticulate to serrate. Marcescent brown leaves are retained through winter.
+
+### Range and habitat
+Found in a variety of soils from nutrient-poor to acidic, this species grows both as an overstory tree leading to beech-maple climax communities as well as in the understory of fire-excluded forests in our region.
+Its distribution has changed drastically through glaciations. During the Wisconsin full-glacial it was restricted to the southeast, but expansion occurred rapidly into the eastern Great Lakes region where its abundance is highest in modern times [@bennett1985].
+
+### Ecology
+Beech nuts are important sources of food for a variety of mammals and once were a primary food of the passenger pigeon [@conrad2005]. It is also used as timber and as firewood or in smoking meats and cheeses.
+
+### Economic and cultural significance
+Native American uses for beech include treatment of worms, consumption, heart issues, and as a poultice for burns and poison ivy [@fna].
+
+```{r include = F}
+x <- x + 1
+```
+
+## 16. `r plants$id[x]`: *`r plants$species[x]`* `r plants$authority[x]`
+
+Family `r plants$family[x]`, order `r plants$order[x]`
+
+`r str_to_sentence(plants$common_name[x])` 
+
+Collected `r format(plants$date[x], "%B %e")` from `r plants$site[x]` in `r plants$county[x]` County, `r plants$state[x]` (`r round(plants$lat[x], 5)`, `r round(plants$long[x], 5)`).
+`r if_else(!is.na(plants$inaturalist[x]), glue("Photos are available at {plants$inaturalist[x]}."), "")` 
+
+### Morphological description
+Perennial, caulescent herb lacking stolons or bulbs [@fna]. The aerial stems are 10-25 cm in height, initially erect but may become prostrate or stolon-like, and possess antrorsely appressed hairs. Both basal and cauline leaves are present, with oblong stipules. There are three leaflets with an obcordate shape, lobed to approximately 1/4 the length of the leaf. The inflorescences form umbelliform cymes with 1-3, rarely  8, 5-parted flowers. The corollas are yellow and unlined.
+
+### Range and habitat
+Common in pastures, lawns, road edges, and gravelly to sandy soils, this species is widespread and occurs in every state except California and Nevada.
+
+### Ecology
+*Oxalis* is commonly visited by small bees, which pollinate, and bee flies, which typically eat the pollen. Several songbirds and upland gamebirds consume the seeds.
+The leaves have a slightly sour taste and are edible.
+Oxalic acid, extracted from plants in this family, has industrial applications in cleaning and rust removal.
+
+### Economic and cultural significance
+
+```{r include = F}
+x <- x + 1
+```
+
+## 17. `r plants$id[x]`: *`r plants$species[x]`* `r plants$authority[x]`
+
+Family `r plants$family[x]`, order `r plants$order[x]`
+
+`r str_to_sentence(plants$common_name[x])` 
+
+Collected `r format(plants$date[x], "%B %e")` from `r plants$site[x]` in `r plants$county[x]` County, `r plants$state[x]` (`r round(plants$lat[x], 5)`, `r round(plants$long[x], 5)`).
+`r if_else(!is.na(plants$inaturalist[x]), glue("Photos are available at {plants$inaturalist[x]}."), "")` 
+
+### Morphological description
+Also known as scuppernong, this species is a high-climbing deciduous vine with simple tendrils. Leaves are approximately as long as wide, obivular to cordate-ovate in shape, glossy, and irregularly serrate. Inforescences are panicles, globose in outline, maturing into purple to bronze edible berries [@fov]. This species is functionally dioecious because of incomplete stamen or pistil formation on female and male vines respectively [@andersen2020].
+
+### Range and habitat
+It can be found in a variety of habitats from alluvial, maritime, and tidal swamps, floodplain forests, sandhill woodlands, upland forests, and dune scrub, but is most common in the coastal plain and piedmont [@fov].
+Its natural range extends from Delaware to Florida to Texas and north to Missouri and West Virginia [@andersen2020].
+
+### Ecology
+The fruits are consumed by many animals including raccoons, crows, songbirds, opossums, coyotes, and deer.
+
+### Economic and cultural significance
+Vineyards grow muscadine grape, as do homeowners, for processing into wine, juice, and jellies. Many cultivars exist.
+This species was the first native grape to be cultivated in North America.
+
+```{r include = F}
+x <- x + 1
+```
+
+## 18. `r plants$id[x]`: *`r plants$species[x]`* `r plants$authority[x]`
+
+Family `r plants$family[x]`, order `r plants$order[x]`
+
+`r str_to_sentence(plants$common_name[x])` 
+
+Collected `r format(plants$date[x], "%B %e")` from `r plants$site[x]` in `r plants$county[x]` County, `r plants$state[x]` (`r round(plants$lat[x], 5)`, `r round(plants$long[x], 5)`).
+`r if_else(!is.na(plants$inaturalist[x]), glue("Photos are available at {plants$inaturalist[x]}."), "")` 
+
+### Morphological description 
+Deciduous tree growing to 35 m in height, with dark brown bark rough and ridged and inner bark orange-yellow [@fov].
+The twigs are glabrate and new buds are 4-angled and densely pubescent.
+The leaves grow up to 25 cm and typically have 2-3 pairs of lobes possessing shallow or deep sinuses and acute tips.
+Notable are the scurfy-pubescent underside and upper midrib of the leaves.
+Acorns (not observed) are ovoid with bowl-like cups, covering half the nut.
+
+### Range and habitat 
+This species is common throughout dry to dry-mesic upland forests and woodlands.
+It ranges from Texas to Kansas east to northern Florida and southern Maine and north to southern Ontario [@fna].
+
+### Ecology
+Oaks are important species for songbirds, as they host a wealth of insect life, particularly caterpillars, providing food for migrating and nesting birds.
+Acorns provide food for both birds and mammals, as well as certain insects.
+
+### Economic and cultural significance 
+Black oak is also used for timber.
+
+```{r include = F}
+x <- x + 1
+```
+
+## **19.** `r plants$id[x]`: *`r plants$species[x]`* `r plants$authority[x]`
+
+Family `r plants$family[x]`, order `r plants$order[x]`
+
+`r str_to_sentence(plants$common_name[x])` 
+
+Collected `r format(plants$date[x], "%B %e")` from `r plants$site[x]` in `r plants$county[x]` County, `r plants$state[x]` (`r round(plants$lat[x], 5)`, `r round(plants$long[x], 5)`).
+`r if_else(!is.na(plants$inaturalist[x]), glue("Photos are available at {plants$inaturalist[x]}."), "")` 
+
+See collection MLM004 for description of this species.
+This individual was growing in a substrate of rotting deck wood and did not yet possess developed sporangia.
+
+```{r include = F}
+x <- x + 1
+```
+
+## 20. `r plants$id[x]`: *`r plants$species[x]`* `r plants$authority[x]`
+
+Family `r plants$family[x]`, order `r plants$order[x]`
+
+`r str_to_sentence(plants$common_name[x])` 
+
+Collected `r format(plants$date[x], "%B %e")` from `r plants$site[x]` in `r plants$county[x]` County, `r plants$state[x]` (`r round(plants$lat[x], 5)`, `r round(plants$long[x], 5)`).
+`r if_else(!is.na(plants$inaturalist[x]), glue("Photos are available at {plants$inaturalist[x]}."), "")` 
+
+### Morphological description 
+*Taxus canadensis* is a shrub growing to 2 m in height.
+Stems are diffuse and speading-ascending, with green, linear leaves growing 1-2.5 cm in length and 1-2.4 mm in width [@fov].
+Seeds are arils.
+
+### Range and habitat 
+The species grows naturally on rocky areas such as cliffs, bluffs, boulder fields, forests, and seepage swamps, often in association with calcareous or mafic substrate.
+It can be found throughout the northern Appalachians, Great Lakes region, and southeastern Canada.
+
+### Ecology
+
+### Economic and cultural significance
+It is also commonly used in horticulture.
+This specimen was a landscaped hedge outside an apartment complex.
+
+# References
