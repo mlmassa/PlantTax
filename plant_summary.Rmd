@@ -409,10 +409,6 @@ Family `r plants$family[x]`, order `r plants$order[x]`
 Collected `r format(plants$date[x], "%B %e")` from `r plants$site[x]` in `r plants$county[x]` County, `r plants$state[x]` (`r round(plants$lat[x], 5)`, `r round(plants$long[x], 5)`).
 `r if_else(!is.na(plants$inaturalist[x]), glue("Photos are available at {plants$inaturalist[x]}."), "")` 
 
-```{r denden}
-knitr::include_graphics("output/denden.png")
-```
-
 ### Morphological description
 *Dendrolycopodium dendroideum* is an erect, branching evergreen clubmoss with a sessile strobilus, which can be separated from *D. obscurum* by spreading microphylls on the vertical stem [@fov].
 
@@ -699,11 +695,11 @@ Pink anthers are evident in this specimen.
 
 ### Range and habitat 
 This species is restricted to the Appalachian mountains, New England, and Great Lakes region, with additional records in Iowa, and Newfoundland [@fna].
-It is common to rare depending on region, and can be found in rich cove forests, northern hardwoods, and well-drained floodplains, often in calcareous soils [@fov].
+It is common to rare depending on region, and can be found in rich cove forests, northern hardwoods, and well-drained floodplains, often in calcareous soils [@fov]. This species is ranked S3 in Maryland (rare or uncommon in the state, with 21-100 occurrences) and is tracked by the Maryland Natural Heritage Program as a species of conservation concern, but ranked G5 (demonstrably secure) globally. I should not have collected it, but it was locally fairly common and the Flora of Virginia did not list it as a species of conservation concern.
 
 ### Ecology
 As spring ephemerals, *Claytonia* species provide important resources to pollinators.
-Two major pollinators are *Andrena erigeniae*, which specializes on pollen and is closely associated with this genus, and a bee-fly *Bombylius major* [@parker2018].
+Two major pollinators are *Andrena erigeniae*, a solitary bee that specializes on pollen and is closely associated with *Claytonia*, and a bee-fly *Bombylius major* [@parker2018].
 
 ### Economic and cultural significance 
 Spring beauty corms have a long history of foraging in indigenous cultures, being eaten raw or prepared as one would a potato [@kuhnlein1991].
@@ -821,7 +817,14 @@ Found in a variety of soils from nutrient-poor to acidic, this species grows bot
 Its distribution has changed drastically through glaciations. During the Wisconsin full-glacial it was restricted to the southeast, but expansion occurred rapidly into the eastern Great Lakes region where its abundance is highest in modern times [@bennett1985].
 
 ### Ecology
-Beech nuts are important sources of food for a variety of mammals and once were a primary food of the passenger pigeon [@conrad2005]. It is also used as timber and as firewood or in smoking meats and cheeses.
+
+American beech is impacted by beech bark disease, which is caused by the introduced beech scale insect (*Cryptococcus fagisuga*). First introduced in the 1890s from Europe, the beech scale insect has since spread throughout New England, parts of the Great Lakes region, and down the Appalachian mountains, including into western Maryland [@kibbe2018]. Following tissue damage by the beech scale insect, several fungal species infect the tree, leading to cankers and fruiting fungal bodies. While this condition does not typically kill the tree, it does reduce and yellow the canopy and weaken the trunk, leading to a phenomenon called "beech snap" in which weakened trees are easily felled by wind, posing a safety hazard. 
+
+The progression of beech scale disease in a forest follows three stages [@kibbe2018]. In the first, the advance front, beech scale reproduces on trunks in low but increasing density. The front spreads slowly. In the second stage, the killing front, high density of scale insects leads to fungal infections and the first tree mortality after 3 to 6 years. Mature trees are more vulnerable than young trees and can face 50% mortality. In the third and final stage, the aftermath, up to 90% of beech trees may have died. The scale insect and fungal infection persists throughout the forest on remaining trees. While beech is not eliminated, it is typically confined to the understory as they regrow from root suckers. Because beech is a shade-tolerant species, regrowth can create problems when dense understory cover of young beech prevents other tree species from regenerating. This disease has only reached around 30% of the range of *Fagus grandifolia* and will likely continue to expand.
+
+Beech leaf disease, a pathogen affecting multiple other ornamental beech species along with American beech, first appeared in northeast Ohio in 2012 and has since expanded to the Lake Erie region and parts of New England, though the disease has not yet reached western Maryland [@martin2022]. While it does not commonly cause mortality, this infection causes dark banding between lateral leaf veins and a shrunken or crinkled appearance, leading to premature leaf drop and canopy thinning. It more heavily impacts smaller trees, in contrast to beech scale disease.
+
+The loss of beech trees poses a risk to the ecology of beech forests. Beech nuts are important sources of food for a variety of mammals and were once a primary food of the passenger pigeon [@conrad2005]. It is also used as timber and as firewood or in smoking meats and cheeses. Beech trees produce nuts starting when they are around 20 years old and reach peak production at the age of 40-50 [@matt2022]. The loss of large trees to beech scale could drastically reduce the amount of mast available for consumption by wildlife by eliminating trees old enough to produce.
 
 ### Economic and cultural significance
 Native American uses for beech include treatment of worms, consumption, heart issues, and as a poultice for burns and poison ivy [@fna].
